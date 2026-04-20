@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <title>BVO Metrics</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; background: #fff; color: #1a1a1a; padding: 12px; }
+    h1 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+    .toolbar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    button { font-size: 12px; padding: 5px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; cursor: pointer; color: #333; }
+    button:hover { background: #e8e8e8; }
+    button.primary { background: #0055a4; color: white; border-color: #0055a4; }
+    select { font-size: 12px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; }
+    .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+    .stat { background: #f7f7f7; border-radius: 4px; padding: 8px 10px; }
+    .stat-label { font-size: 11px; color: #777; margin-bottom: 2px; }
+    .stat-value { font-size: 18px; font-weight: 600; }
+    .stat-unit { font-size: 11px; color: #999; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; font-weight: 600; font-size: 11px; color: #666; padding: 5px 6px; border-bottom: 1px solid #e5e5e5; }
+    td { padding: 6px; border-bottom: 1px solid #f0f0f0; }
+    tr:hover td { background: #fafafa; }
+    .bar-wrap { display: flex; align-items: center; gap: 4px; }
+    .bar-bg { flex: 1; height: 5px; background: #ebebeb; border-radius: 3px; overflow: hidden; min-width: 40px; }
+    .bar-fill { height: 100%; border-radius: 3px; }
+    .section-title { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 0 6px; }
+    .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px; font-weight: 500; }
+    .status { font-size: 12px; color: #666; padding: 8px 0; text-align: center; }
+    .error { color: #c0392b; background: #fdf0ef; border-radius: 4px; padding: 8px; font-size: 12px; margin-top: 8px; }
+    .export-row { display: flex; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; }
+    .debug { font-size: 10px; color: #888; margin-top: 8px; padding: 6px; background: #f9f9f9; border-radius: 4px; word-break: break-all; white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+<h1>BVO Metrics</h1>
+<div class="toolbar">
+  <button class="primary" id="btn-load">&#8635; Ophalen</button>
+  <select id="groupBy">
+    <option value="building">Per gebouw</option>
+    <option value="zone">Per zone</option>
+    <option value="both">Beide</option>
+  </select>
+</div>
+<div id="content">
+  <div class="status">Klik op Ophalen om te starten.</div>
+</div>
+<script type="module">
+  import { Forma } from "https://app.autodeskforma.eu/forma-embedded-view-sdk/forma-embedded-view-sdk.js";
+  const ZONE_COLORS = { residential:'#2980b9', office:'#8e44ad', retail:'#27ae60', mixed:'#e67e22', parking:'#7f8c8d' };
+  const ZONE_LABELS = { residential:'Wonen', office:'Kantoor', retail:'Plint / commercieel', mixed:'Mix', parking:'Parkeren' };
+  function zoneLabel(k) { if (!k) return 'Onbekend'; const l=k.toLowerCase(); for (const [en,nl] of Object.entries(ZONE_LABELS)) if (l.includes(en)) return nl; return k; }
+  function zoneColor(k) { if (!k) return '#95a5a6'; const l=k.toLowerCase(); for (const [en,c] of Object.entries(ZONE_COLORS)) if (l.includes(en)) return c; return '#95a5a6'; }
+  let allData = [];
+  document.getElementById('btn-load').addEventListener('click', async () => {
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="status">Data ophalen...</div>';
+    allData = [];
+    try {
+      const paths = await Forma.geometry.getPathsByCategory({ category: 'building' });
+      if (!paths || paths.length === 0) { content.innerHTML = '<div class="status">Geen gebouwen gevonden.</div>'; return; }
+      const results = await Promise.allSettled(paths.map(async path => {
+        const m = await Forma.areaMetrics.calculate({ path });
+        const b = m?.builtInMetrics || {};
+        return { path, name: path.split('/').pop().replace(/_/g,' '),
+          gfa: Math.round(b.grossFloorArea ?? b.gfa ?? 0),
+          floors: b.numberOfFloors ?? b.number_of_floors ?? null,
+          zone: b.buildingUse ?? b.building_use ?? b.use ?? b.category ?? null, _raw: b };
+      }));
+      const ok = results.filter(r => r.status==='fulfilled').map(r => r.value);
+      allData = ok.filter(b => b.gfa > 0);
+      if (allData.length === 0 && ok.length > 0) { content.innerHTML = `<div class="error">${ok.length} gebouw(en) gevonden maar BVO = 0.</div><div class="debug">${JSON.stringify(ok[0]._raw,null,2)}</div>`; return; }
+      if (allData.length === 0) { content.innerHTML = `<div class="error">Geen data. Fout: ${results.find(r=>r.status==='rejected')?.reason?.message||'onbekend'}</div>`; return; }
+      render();
+    } catch(e) { content.innerHTML = `<div class="error">${e.message}</div><div class="debug">${e.stack||''}</div>`; }
+  });
+  document.getElementById('groupBy').addEventListener('change', render);
+  function render() {
+    if (!allData.length) return;
+    const groupBy = document.getElementById('groupBy').value;
+    const total = allData.reduce((s,b)=>s+b.gfa,0);
+    const fd = allData.filter(b=>b.floors);
+    const avgF = fd.length ? Math.round(fd.reduce((s,b)=>s+b.floors,0)/fd.length) : '—';
+    const content = document.getElementById('content');
+    let html = `<div class="summary"><div class="stat"><div class="stat-label">Totaal BVO</div><div class="stat-value">${total.toLocaleString('nl-NL')}<span class="stat-unit"> m²</span></div></div><div class="stat"><div class="stat-label">Gebouwen</div><div class="stat-value">${allData.length}</div></div><div class="stat"><div class="stat-label">Gem. bouwlagen</div><div class="stat-value">${avgF}</div></div><div class="stat"><div class="stat-label">Zones</div><div class="stat-value">${new Set(allData.map(b=>b.zone)).size}</div></div></div>`;
+    if (groupBy==='building'||groupBy==='both') {
+      html += '<div class="section-title">Per gebouw</div><table><thead><tr><th>Naam</th><th>Zone</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
+      for (const b of allData) { const p=total>0?Math.round(b.gfa/total*100):0; const c=zoneColor(b.zone); html+=`<tr><td style="font-weight:500">${b.name}</td><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(b.zone)}</span></td><td>${b.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`; }
+      html += '</tbody></table>';
+    }
+    if (groupBy==='zone'||groupBy==='both') {
+      const bz={};
+      for (const b of allData) { const k=b.zone||'other'; if(!bz[k]) bz[k]={gfa:0,count:0}; bz[k].gfa+=b.gfa; bz[k].count++; }
+      html += '<div class="section-title">Per zone</div><table><thead><tr><th>Zone</th><th>Geb.</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
+      for (const [k,v] of Object.entries(bz)) { const p=total>0?Math.round(v.gfa/total*100):0; const c=zoneColor(k); html+=`<tr><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(k)}</span></td><td>${v.count}</td><td>${v.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`; }
+      html += '</tbody></table>';
+    }
+    html += `<div class="export-row"><button id="btn-csv">CSV ↓</button><button id="btn-json">JSON kopiëren</button></div>`;
+    content.innerHTML = html;
+    document.getElementById('btn-csv').addEventListener('click', () => { const rows=[['Gebouw','Zone','BVO (m2)','Bouwlagen']]; for (const b of allData) rows.push([b.name,zoneLabel(b.zone),b.gfa,b.floors||'']); const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\uFEFF'+rows.map(r=>r.join(';')).join('\n')],{type:'text/csv;charset=utf-8;'})); a.download='forma-bvo.csv'; a.click(); });
+    document.getElementById('btn-json').addEventListener('click', () => { navigator.clipboard.writeText(JSON.stringify(allData,null,2)).then(()=>alert('JSON gekopieerd.')); });
+  }
+</script>
+</body>
+</html>
