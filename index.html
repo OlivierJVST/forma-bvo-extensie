@@ -11,7 +11,7 @@
     button { font-size: 12px; padding: 5px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; cursor: pointer; color: #333; }
     button:hover { background: #e8e8e8; }
     button.primary { background: #0055a4; color: white; border-color: #0055a4; }
-    select { font-size: 12px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; }
+    select, input { font-size: 12px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; }
     .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
     .stat { background: #f7f7f7; border-radius: 4px; padding: 8px 10px; }
     .stat-label { font-size: 11px; color: #777; margin-bottom: 2px; }
@@ -29,16 +29,18 @@
     .status { font-size: 12px; color: #666; padding: 8px 0; text-align: center; line-height: 1.6; }
     .error { color: #c0392b; background: #fdf0ef; border-radius: 4px; padding: 8px; font-size: 12px; margin-top: 8px; }
     .export-row { display: flex; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; }
-    .debug { font-size: 10px; color: #888; margin-top: 8px; padding: 6px; background: #f9f9f9; border-radius: 4px; word-break: break-all; white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+    .debug { font-size: 10px; color: #888; margin-top: 8px; padding: 6px; background: #f9f9f9; border-radius: 4px; word-break: break-all; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
     .login-box { text-align: center; padding: 2rem 1rem; }
     .login-box p { color: #666; margin-bottom: 1rem; font-size: 12px; line-height: 1.6; }
+    .pid-row { display: flex; gap: 6px; align-items: center; margin-bottom: 12px; }
+    .pid-row label { font-size: 11px; color: #666; white-space: nowrap; }
   </style>
 </head>
 <body>
 <h1>BVO Metrics</h1>
 <div id="content">
   <div class="login-box">
-    <p>Log in met je Autodesk-account om de BVO-data van dit project op te halen.</p>
+    <p>Log in met je Autodesk-account om de BVO-data op te halen.</p>
     <button class="primary" id="btn-login">Inloggen met Autodesk</button>
   </div>
 </div>
@@ -46,11 +48,9 @@
 <script>
 const CLIENT_ID = 'PN9OI5HKCbXMCBKtrefrdXwuz3btcjpqnhKluhY1a1CcWetL';
 const REDIRECT_URI = 'https://olivierjvst.github.io/forma-bvo-extensie/';
-const SCOPES = 'data:read';
 
 function base64url(buf) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 }
 async function generatePKCE() {
   const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -67,7 +67,7 @@ async function startLogin() {
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', CLIENT_ID);
   url.searchParams.set('redirect_uri', REDIRECT_URI);
-  url.searchParams.set('scope', SCOPES);
+  url.searchParams.set('scope', 'data:read');
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
@@ -79,82 +79,51 @@ async function handleCallback(code) {
   const resp = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      client_id: CLIENT_ID,
-      code,
-      redirect_uri: REDIRECT_URI,
-      code_verifier: verifier,
-    })
+    body: new URLSearchParams({ grant_type: 'authorization_code', client_id: CLIENT_ID, code, redirect_uri: REDIRECT_URI, code_verifier: verifier })
   });
-  if (!resp.ok) throw new Error('Token ophalen mislukt: ' + await resp.text());
+  if (!resp.ok) throw new Error('Token mislukt: ' + await resp.text());
   const data = await resp.json();
   sessionStorage.setItem('access_token', data.access_token);
   window.history.replaceState({}, '', REDIRECT_URI);
-  await loadHubs(data.access_token);
+  showProjectInput(data.access_token);
 }
 
-async function formaGet(token, path) {
-  const resp = await fetch('https://developer.api.autodesk.com' + path, {
-    headers: { 'Authorization': 'Bearer ' + token }
+async function apiGet(token, url) {
+  const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(url.split('?')[0].split('/').slice(-3).join('/') + ' → ' + resp.status + ': ' + text.slice(0, 200));
+  return JSON.parse(text);
+}
+
+function showProjectInput(token) {
+  // Extract project ID from Forma URL if available
+  const formaUrl = document.referrer || '';
+  const urlMatch = formaUrl.match(/pro_[a-z0-9]+/) || window.location.href.match(/pro_([a-z0-9]+)/);
+  const guessedId = urlMatch ? urlMatch[0] : 'pro_zsmg8tbjuc';
+
+  document.getElementById('content').innerHTML = `
+    <div class="pid-row">
+      <label>Project ID:</label>
+      <input id="pid-input" value="${guessedId}" style="flex:1" placeholder="pro_xxxxxxxx">
+      <button class="primary" id="btn-load">&#8635; Ophalen</button>
+      <select id="groupBy">
+        <option value="building">Per gebouw</option>
+        <option value="zone">Per zone</option>
+        <option value="both">Beide</option>
+      </select>
+      <button id="btn-logout" style="color:#999;font-size:11px">Uitloggen</button>
+    </div>
+    <div style="font-size:11px;color:#aaa;margin-bottom:12px">Het project ID staat in de URL van je Forma-project (bijv. pro_zsmg8tbjuc)</div>
+    <div id="metrics-content"><div class="status">Voer een project ID in en klik Ophalen.</div></div>
+  `;
+  document.getElementById('btn-logout').addEventListener('click', () => { sessionStorage.clear(); location.reload(); });
+  document.getElementById('groupBy').addEventListener('change', renderTables);
+  document.getElementById('btn-load').addEventListener('click', () => {
+    const pid = document.getElementById('pid-input').value.trim();
+    if (pid) loadMetrics(token, pid);
   });
-  if (!resp.ok) throw new Error(path + ' → ' + resp.status + ': ' + await resp.text());
-  return resp.json();
-}
-
-async function loadHubs(token) {
-  const content = document.getElementById('content');
-  content.innerHTML = '<div class="status">Hubs ophalen...</div>';
-  try {
-    const hubs = await formaGet(token, '/project/v1/hubs');
-    if (!hubs.data?.length) {
-      content.innerHTML = `<div class="error">Geen hubs gevonden voor dit account.</div>
-        <div class="debug">${JSON.stringify(hubs, null, 2)}</div>`;
-      return;
-    }
-    // Show hub + project selector
-    let hubOptions = hubs.data.map(h =>
-      `<option value="${h.id}">${h.attributes.name} (${h.id})</option>`
-    ).join('');
-    content.innerHTML = `
-      <div class="toolbar">
-        <select id="hub-select" style="flex:1;max-width:180px">${hubOptions}</select>
-        <select id="project-select" style="flex:1;max-width:180px"><option>-- laadt --</option></select>
-        <button class="primary" id="btn-load">&#8635; Ophalen</button>
-        <select id="groupBy">
-          <option value="building">Per gebouw</option>
-          <option value="zone">Per zone</option>
-          <option value="both">Beide</option>
-        </select>
-        <button id="btn-logout" style="color:#999;font-size:11px">Uitloggen</button>
-      </div>
-      <div id="metrics-content"><div class="status">Selecteer een hub en project.</div></div>
-    `;
-    document.getElementById('btn-logout').addEventListener('click', () => { sessionStorage.clear(); location.reload(); });
-    document.getElementById('groupBy').addEventListener('change', renderTables);
-    document.getElementById('hub-select').addEventListener('change', () => loadProjects(token));
-    document.getElementById('btn-load').addEventListener('click', () => {
-      const pid = document.getElementById('project-select').value;
-      if (pid) loadMetrics(token, pid);
-    });
-    await loadProjects(token);
-  } catch(e) {
-    content.innerHTML = `<div class="error">${e.message}</div><div class="debug">${e.stack||''}</div>`;
-  }
-}
-
-async function loadProjects(token) {
-  const hubId = document.getElementById('hub-select').value;
-  const ps = document.getElementById('project-select');
-  ps.innerHTML = '<option>laden...</option>';
-  try {
-    const projects = await formaGet(token, `/project/v1/hubs/${hubId}/projects`);
-    ps.innerHTML = projects.data.map(p =>
-      `<option value="${p.id}">${p.attributes.name}</option>`
-    ).join('');
-  } catch(e) {
-    ps.innerHTML = `<option>Fout: ${e.message}</option>`;
-  }
+  // Auto-load if we have a project ID
+  if (guessedId) loadMetrics(token, guessedId);
 }
 
 let allData = [];
@@ -163,38 +132,58 @@ async function loadMetrics(token, projectId) {
   const mc = document.getElementById('metrics-content');
   mc.innerHTML = '<div class="status">Forma API aanroepen...</div>';
   allData = [];
-  try {
-    const cleanId = projectId.replace('b.', '');
-    // Try Forma elements API
-    const elements = await formaGet(token, `/forma/v1alpha/projects/${cleanId}/elements`);
 
-    if (!elements?.elements?.length) {
-      mc.innerHTML = `<div class="error">Geen elementen gevonden.</div>
-        <div class="debug">${JSON.stringify(elements, null, 2).slice(0,800)}</div>`;
+  try {
+    // Try Forma Site Design API
+    const base = 'https://developer.api.autodesk.com';
+    let elements;
+
+    // Try different API paths
+    try {
+      elements = await apiGet(token, `${base}/forma/v1alpha/projects/${projectId}/elements`);
+    } catch(e1) {
+      mc.innerHTML = `<div class="status">Alternatief endpoint proberen...</div>`;
+      try {
+        elements = await apiGet(token, `${base}/forma/v1/projects/${projectId}/elements`);
+      } catch(e2) {
+        throw new Error(`Beide endpoints faalden.\nv1alpha: ${e1.message}\nv1: ${e2.message}`);
+      }
+    }
+
+    const allElements = elements?.elements || elements?.data || [];
+    if (!allElements.length) {
+      mc.innerHTML = `<div class="error">Geen elementen gevonden voor project ${projectId}.</div>
+        <div class="debug">${JSON.stringify(elements, null, 2).slice(0,600)}</div>`;
       return;
     }
 
-    const buildings = elements.elements.filter(e =>
+    const buildings = allElements.filter(e =>
       e.properties?.category === 'building' ||
-      e.urn?.includes('building') ||
-      e.properties?.type === 'building'
+      e.type === 'building' ||
+      e.urn?.includes('basicbuilding') ||
+      e.urn?.includes('building')
     );
 
-    mc.innerHTML = `<div class="status">${elements.elements.length} elementen, ${buildings.length} gebouwen gevonden...</div>`;
+    mc.innerHTML = `<div class="status">${allElements.length} elementen gevonden, ${buildings.length} gebouwen...</div>`;
 
     if (!buildings.length) {
-      mc.innerHTML = `<div class="error">Geen gebouwen gevonden. Elementen structuur:</div>
-        <div class="debug">${JSON.stringify(elements.elements.slice(0,2), null, 2)}</div>`;
+      mc.innerHTML = `<div class="error">Geen gebouwen herkend in ${allElements.length} elementen.</div>
+        <div class="debug">Eerste elementen:\n${JSON.stringify(allElements.slice(0,3), null, 2)}</div>`;
       return;
     }
 
     const results = await Promise.allSettled(buildings.map(async el => {
       const urn = el.urn || el.id;
-      const metrics = await formaGet(token, `/forma/v1alpha/projects/${cleanId}/elements/${encodeURIComponent(urn)}/metrics`);
-      const m = metrics?.builtInMetrics || metrics?.metrics || {};
+      let metrics;
+      try {
+        metrics = await apiGet(token, `${base}/forma/v1alpha/projects/${projectId}/elements/${encodeURIComponent(urn)}/metrics`);
+      } catch(e) {
+        metrics = await apiGet(token, `${base}/forma/v1/projects/${projectId}/elements/${encodeURIComponent(urn)}/metrics`);
+      }
+      const m = metrics?.builtInMetrics || metrics?.metrics || metrics || {};
       return {
-        name: el.properties?.name || urn.split(':').pop(),
-        zone: el.properties?.buildingUse || el.properties?.function || el.properties?.use || null,
+        name: el.properties?.name || el.name || urn.split(':').pop().replace(/_/g,' '),
+        zone: el.properties?.buildingUse || el.properties?.function || el.properties?.programType || null,
         gfa: Math.round(m.grossFloorArea ?? m.gfa ?? 0),
         floors: m.numberOfFloors ?? m.floors ?? null,
         _raw: m,
@@ -205,13 +194,13 @@ async function loadMetrics(token, projectId) {
 
     if (!allData.length && results.some(r => r.status==='fulfilled')) {
       const s = results.find(r => r.status==='fulfilled');
-      mc.innerHTML = `<div class="error">Gebouwen gevonden maar BVO = 0.</div>
-        <div class="debug">${JSON.stringify(s.value._raw, null, 2)}</div>`;
+      mc.innerHTML = `<div class="error">${buildings.length} gebouwen gevonden maar BVO = 0 voor alle.</div>
+        <div class="debug">Metrics van eerste gebouw:\n${JSON.stringify(s.value._raw, null, 2)}</div>`;
       return;
     }
     if (!allData.length) {
       const err = results.find(r => r.status==='rejected');
-      mc.innerHTML = `<div class="error">Geen data. ${err?.reason?.message||''}</div>`;
+      mc.innerHTML = `<div class="error">Geen data opgehaald. ${err?.reason?.message||''}</div>`;
       return;
     }
     renderTables();
@@ -240,8 +229,8 @@ function renderTables() {
   </div>`;
   if (groupBy==='building'||groupBy==='both') {
     html += '<div class="section-title">Per gebouw</div><table><thead><tr><th>Naam</th><th>Zone</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
-    for (const b of allData) {
-      const p = total>0?Math.round(b.gfa/total*100):0, c=zoneColor(b.zone);
+    for (const b of [...allData].sort((a,b)=>b.gfa-a.gfa)) {
+      const p=total>0?Math.round(b.gfa/total*100):0, c=zoneColor(b.zone);
       html += `<tr><td style="font-weight:500">${b.name}</td><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(b.zone)}</span></td><td>${b.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`;
     }
     html += '</tbody></table>';
@@ -250,7 +239,7 @@ function renderTables() {
     const bz={};
     for (const b of allData) { const k=b.zone||'other'; if(!bz[k]) bz[k]={gfa:0,count:0}; bz[k].gfa+=b.gfa; bz[k].count++; }
     html += '<div class="section-title">Per zone</div><table><thead><tr><th>Zone</th><th>Geb.</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
-    for (const [k,v] of Object.entries(bz)) {
+    for (const [k,v] of Object.entries(bz).sort((a,b)=>b[1].gfa-a[1].gfa)) {
       const p=total>0?Math.round(v.gfa/total*100):0, c=zoneColor(k);
       html += `<tr><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(k)}</span></td><td>${v.count}</td><td>${v.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`;
     }
@@ -279,7 +268,7 @@ if (code) {
     document.getElementById('content').innerHTML = `<div class="error">Login mislukt: ${e.message}</div>`;
   });
 } else if (token) {
-  loadHubs(token);
+  showProjectInput(token);
 }
 </script>
 </body>
