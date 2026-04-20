@@ -2,7 +2,7 @@
 <html lang="nl">
 <head>
   <meta charset="UTF-8">
-  <title>BVO Metrics</title>
+  <title>BVO Metrics – JVST</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; background: #fff; color: #1a1a1a; padding: 12px; }
@@ -18,7 +18,8 @@
     .stat-value { font-size: 18px; font-weight: 600; }
     .stat-unit { font-size: 11px; color: #999; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th { text-align: left; font-weight: 600; font-size: 11px; color: #666; padding: 5px 6px; border-bottom: 1px solid #e5e5e5; }
+    th { text-align: left; font-weight: 600; font-size: 11px; color: #666; padding: 5px 6px; border-bottom: 1px solid #e5e5e5; cursor: pointer; }
+    th:hover { color: #333; }
     td { padding: 6px; border-bottom: 1px solid #f0f0f0; }
     tr:hover td { background: #fafafa; }
     .bar-wrap { display: flex; align-items: center; gap: 4px; }
@@ -26,80 +27,300 @@
     .bar-fill { height: 100%; border-radius: 3px; }
     .section-title { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 0 6px; }
     .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px; font-weight: 500; }
-    .status { font-size: 12px; color: #666; padding: 8px 0; text-align: center; }
+    .status { font-size: 12px; color: #666; padding: 8px 0; text-align: center; line-height: 1.6; }
     .error { color: #c0392b; background: #fdf0ef; border-radius: 4px; padding: 8px; font-size: 12px; margin-top: 8px; }
     .export-row { display: flex; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; }
     .debug { font-size: 10px; color: #888; margin-top: 8px; padding: 6px; background: #f9f9f9; border-radius: 4px; word-break: break-all; white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+    .login-box { text-align: center; padding: 2rem 1rem; }
+    .login-box p { color: #666; margin-bottom: 1rem; font-size: 12px; line-height: 1.6; }
   </style>
 </head>
 <body>
+
 <h1>BVO Metrics</h1>
-<div class="toolbar">
-  <button class="primary" id="btn-load">&#8635; Ophalen</button>
-  <select id="groupBy">
-    <option value="building">Per gebouw</option>
-    <option value="zone">Per zone</option>
-    <option value="both">Beide</option>
-  </select>
-</div>
 <div id="content">
-  <div class="status">Klik op Ophalen om te starten.</div>
+  <div class="login-box">
+    <p>Log in met je Autodesk-account om de BVO-data van dit project op te halen.</p>
+    <button class="primary" id="btn-login">Inloggen met Autodesk</button>
+  </div>
 </div>
-<script type="module">
-  import { Forma } from "https://app.autodeskforma.eu/forma-embedded-view-sdk/forma-embedded-view-sdk.js";
-  const ZONE_COLORS = { residential:'#2980b9', office:'#8e44ad', retail:'#27ae60', mixed:'#e67e22', parking:'#7f8c8d' };
-  const ZONE_LABELS = { residential:'Wonen', office:'Kantoor', retail:'Plint / commercieel', mixed:'Mix', parking:'Parkeren' };
-  function zoneLabel(k) { if (!k) return 'Onbekend'; const l=k.toLowerCase(); for (const [en,nl] of Object.entries(ZONE_LABELS)) if (l.includes(en)) return nl; return k; }
-  function zoneColor(k) { if (!k) return '#95a5a6'; const l=k.toLowerCase(); for (const [en,c] of Object.entries(ZONE_COLORS)) if (l.includes(en)) return c; return '#95a5a6'; }
-  let allData = [];
-  document.getElementById('btn-load').addEventListener('click', async () => {
-    const content = document.getElementById('content');
-    content.innerHTML = '<div class="status">Data ophalen...</div>';
-    allData = [];
-    try {
-      const paths = await Forma.geometry.getPathsByCategory({ category: 'building' });
-      if (!paths || paths.length === 0) { content.innerHTML = '<div class="status">Geen gebouwen gevonden.</div>'; return; }
-      const results = await Promise.allSettled(paths.map(async path => {
-        const m = await Forma.areaMetrics.calculate({ path });
-        const b = m?.builtInMetrics || {};
-        return { path, name: path.split('/').pop().replace(/_/g,' '),
-          gfa: Math.round(b.grossFloorArea ?? b.gfa ?? 0),
-          floors: b.numberOfFloors ?? b.number_of_floors ?? null,
-          zone: b.buildingUse ?? b.building_use ?? b.use ?? b.category ?? null, _raw: b };
-      }));
-      const ok = results.filter(r => r.status==='fulfilled').map(r => r.value);
-      allData = ok.filter(b => b.gfa > 0);
-      if (allData.length === 0 && ok.length > 0) { content.innerHTML = `<div class="error">${ok.length} gebouw(en) gevonden maar BVO = 0.</div><div class="debug">${JSON.stringify(ok[0]._raw,null,2)}</div>`; return; }
-      if (allData.length === 0) { content.innerHTML = `<div class="error">Geen data. Fout: ${results.find(r=>r.status==='rejected')?.reason?.message||'onbekend'}</div>`; return; }
-      render();
-    } catch(e) { content.innerHTML = `<div class="error">${e.message}</div><div class="debug">${e.stack||''}</div>`; }
+
+<script>
+const CLIENT_ID = 'PN9OI5HKCbXMCBKtrefrdXwuz3btcjpqnhKluhY1a1CcWetL';
+const REDIRECT_URI = 'https://olivierjvst.github.io/forma-bvo-extensie/';
+const SCOPES = 'data:read';
+
+// ── OAuth PKCE helpers ────────────────────────────────────────────────────
+function base64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+async function generatePKCE() {
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return { verifier, challenge: base64url(digest) };
+}
+
+async function startLogin() {
+  const { verifier, challenge } = await generatePKCE();
+  sessionStorage.setItem('pkce_verifier', verifier);
+  const state = base64url(crypto.getRandomValues(new Uint8Array(8)));
+  sessionStorage.setItem('oauth_state', state);
+
+  const url = new URL('https://developer.api.autodesk.com/authentication/v2/authorize');
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', CLIENT_ID);
+  url.searchParams.set('redirect_uri', REDIRECT_URI);
+  url.searchParams.set('scope', SCOPES);
+  url.searchParams.set('state', state);
+  url.searchParams.set('code_challenge', challenge);
+  url.searchParams.set('code_challenge_method', 'S256');
+  window.location.href = url.toString();
+}
+
+async function handleCallback(code) {
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  const resp = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: CLIENT_ID,
+      code,
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier,
+    })
   });
-  document.getElementById('groupBy').addEventListener('change', render);
-  function render() {
-    if (!allData.length) return;
-    const groupBy = document.getElementById('groupBy').value;
-    const total = allData.reduce((s,b)=>s+b.gfa,0);
-    const fd = allData.filter(b=>b.floors);
-    const avgF = fd.length ? Math.round(fd.reduce((s,b)=>s+b.floors,0)/fd.length) : '—';
-    const content = document.getElementById('content');
-    let html = `<div class="summary"><div class="stat"><div class="stat-label">Totaal BVO</div><div class="stat-value">${total.toLocaleString('nl-NL')}<span class="stat-unit"> m²</span></div></div><div class="stat"><div class="stat-label">Gebouwen</div><div class="stat-value">${allData.length}</div></div><div class="stat"><div class="stat-label">Gem. bouwlagen</div><div class="stat-value">${avgF}</div></div><div class="stat"><div class="stat-label">Zones</div><div class="stat-value">${new Set(allData.map(b=>b.zone)).size}</div></div></div>`;
-    if (groupBy==='building'||groupBy==='both') {
-      html += '<div class="section-title">Per gebouw</div><table><thead><tr><th>Naam</th><th>Zone</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
-      for (const b of allData) { const p=total>0?Math.round(b.gfa/total*100):0; const c=zoneColor(b.zone); html+=`<tr><td style="font-weight:500">${b.name}</td><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(b.zone)}</span></td><td>${b.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`; }
-      html += '</tbody></table>';
-    }
-    if (groupBy==='zone'||groupBy==='both') {
-      const bz={};
-      for (const b of allData) { const k=b.zone||'other'; if(!bz[k]) bz[k]={gfa:0,count:0}; bz[k].gfa+=b.gfa; bz[k].count++; }
-      html += '<div class="section-title">Per zone</div><table><thead><tr><th>Zone</th><th>Geb.</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
-      for (const [k,v] of Object.entries(bz)) { const p=total>0?Math.round(v.gfa/total*100):0; const c=zoneColor(k); html+=`<tr><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(k)}</span></td><td>${v.count}</td><td>${v.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`; }
-      html += '</tbody></table>';
-    }
-    html += `<div class="export-row"><button id="btn-csv">CSV ↓</button><button id="btn-json">JSON kopiëren</button></div>`;
-    content.innerHTML = html;
-    document.getElementById('btn-csv').addEventListener('click', () => { const rows=[['Gebouw','Zone','BVO (m2)','Bouwlagen']]; for (const b of allData) rows.push([b.name,zoneLabel(b.zone),b.gfa,b.floors||'']); const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\uFEFF'+rows.map(r=>r.join(';')).join('\n')],{type:'text/csv;charset=utf-8;'})); a.download='forma-bvo.csv'; a.click(); });
-    document.getElementById('btn-json').addEventListener('click', () => { navigator.clipboard.writeText(JSON.stringify(allData,null,2)).then(()=>alert('JSON gekopieerd.')); });
+  if (!resp.ok) throw new Error('Token ophalen mislukt: ' + await resp.text());
+  const data = await resp.json();
+  sessionStorage.setItem('access_token', data.access_token);
+  window.history.replaceState({}, '', REDIRECT_URI);
+  await loadProjectAndMetrics(data.access_token);
+}
+
+// ── Forma API calls ───────────────────────────────────────────────────────
+async function formaGet(token, path) {
+  const resp = await fetch('https://developer.api.autodesk.com' + path, {
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+  if (!resp.ok) throw new Error(path + ' → ' + resp.status + ' ' + await resp.text());
+  return resp.json();
+}
+
+async function loadProjectAndMetrics(token) {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="status">Projecten ophalen...</div>';
+
+  try {
+    // Get hubs
+    const hubs = await formaGet(token, '/project/v1/hubs');
+    const formaHub = hubs.data?.find(h => h.attributes?.name === 'JVST') || hubs.data?.[0];
+    if (!formaHub) throw new Error('Geen JVST hub gevonden');
+
+    const hubId = formaHub.id;
+    content.innerHTML = '<div class="status">Projecten laden voor hub ' + formaHub.attributes.name + '...</div>';
+
+    const projects = await formaGet(token, `/project/v1/hubs/${hubId}/projects`);
+
+    // Get project ID from Forma URL
+    const urlMatch = window.location.href.match(/pro_[a-z0-9]+/) ||
+                     document.referrer.match(/pro_[a-z0-9]+/);
+    const formaProjectId = urlMatch?.[0];
+
+    // Show project selector
+    showProjectSelector(token, projects.data, formaProjectId);
+
+  } catch(e) {
+    content.innerHTML = `<div class="error">Fout: ${e.message}</div><div class="debug">${e.stack||''}</div>`;
   }
+}
+
+function showProjectSelector(token, projects, currentProjectId) {
+  const content = document.getElementById('content');
+
+  let options = projects.map(p =>
+    `<option value="${p.id}" ${p.id.includes(currentProjectId||'') ? 'selected' : ''}>${p.attributes.name}</option>`
+  ).join('');
+
+  content.innerHTML = `
+    <div class="toolbar">
+      <select id="project-select" style="flex:1;max-width:200px">${options}</select>
+      <button class="primary" id="btn-load">&#8635; Ophalen</button>
+      <select id="groupBy">
+        <option value="building">Per gebouw</option>
+        <option value="zone">Per zone</option>
+        <option value="both">Beide</option>
+      </select>
+      <button id="btn-logout" style="color:#999">Uitloggen</button>
+    </div>
+    <div id="metrics-content"><div class="status">Selecteer een project en klik Ophalen.</div></div>
+  `;
+
+  document.getElementById('btn-load').addEventListener('click', () => {
+    const pid = document.getElementById('project-select').value;
+    loadMetrics(token, pid);
+  });
+  document.getElementById('btn-logout').addEventListener('click', () => {
+    sessionStorage.clear();
+    location.reload();
+  });
+  document.getElementById('groupBy').addEventListener('change', renderTables);
+
+  // Auto-load if project found
+  const pid = document.getElementById('project-select').value;
+  if (pid) loadMetrics(token, pid);
+}
+
+let allData = [];
+
+async function loadMetrics(token, projectId) {
+  const mc = document.getElementById('metrics-content');
+  mc.innerHTML = '<div class="status">Elementen ophalen...</div>';
+  allData = [];
+
+  try {
+    // Get Forma project URN from ACC project
+    // The Forma API uses a different project identifier
+    // Try to get elements via Forma API
+    const cleanId = projectId.replace('b.', '');
+
+    mc.innerHTML = '<div class="status">Metrics ophalen via Forma API...</div>';
+
+    // Get elements from Forma
+    const elements = await formaGet(token,
+      `/forma/v1alpha/projects/${cleanId}/elements`
+    );
+
+    if (!elements?.elements?.length) {
+      mc.innerHTML = '<div class="status">Geen elementen gevonden in dit project.</div>' +
+        '<div class="debug">' + JSON.stringify(elements, null, 2).slice(0, 500) + '</div>';
+      return;
+    }
+
+    mc.innerHTML = `<div class="status">${elements.elements.length} elementen gevonden, metrics berekenen...</div>`;
+
+    const buildings = elements.elements.filter(e =>
+      e.properties?.category === 'building' ||
+      e.urn?.includes('building') ||
+      e.properties?.type === 'building'
+    );
+
+    if (!buildings.length) {
+      // Try all elements
+      mc.innerHTML = '<div class="debug">Elementen structuur:\n' +
+        JSON.stringify(elements.elements.slice(0,3), null, 2) + '</div>';
+      return;
+    }
+
+    const results = await Promise.allSettled(buildings.map(async el => {
+      const urn = el.urn || el.id;
+      const metrics = await formaGet(token,
+        `/forma/v1alpha/projects/${cleanId}/elements/${encodeURIComponent(urn)}/metrics`
+      );
+      const m = metrics?.builtInMetrics || metrics?.metrics || {};
+      return {
+        name: el.properties?.name || el.urn?.split(':').pop() || urn,
+        zone: el.properties?.buildingUse || el.properties?.function || el.properties?.use || null,
+        gfa: Math.round(m.grossFloorArea ?? m.gfa ?? 0),
+        floors: m.numberOfFloors ?? m.floors ?? null,
+        _raw: m,
+      };
+    }));
+
+    allData = results.filter(r => r.status === 'fulfilled' && r.value.gfa > 0).map(r => r.value);
+
+    if (!allData.length && results.some(r => r.status === 'fulfilled')) {
+      const sample = results.find(r => r.status === 'fulfilled');
+      mc.innerHTML = `<div class="error">Gebouwen gevonden maar BVO = 0.</div>
+        <div class="debug">${JSON.stringify(sample.value._raw, null, 2)}</div>`;
+      return;
+    }
+
+    if (!allData.length) {
+      const err = results.find(r => r.status === 'rejected');
+      mc.innerHTML = `<div class="error">Geen data. ${err?.reason?.message || ''}</div>`;
+      return;
+    }
+
+    renderTables();
+
+  } catch(e) {
+    mc.innerHTML = `<div class="error">${e.message}</div><div class="debug">${e.stack||''}</div>`;
+  }
+}
+
+const ZONE_COLORS = { residential:'#2980b9', office:'#8e44ad', retail:'#27ae60', mixed:'#e67e22', parking:'#7f8c8d' };
+const ZONE_LABELS = { residential:'Wonen', office:'Kantoor', retail:'Plint / commercieel', mixed:'Mix', parking:'Parkeren' };
+function zoneLabel(k) { if (!k) return 'Onbekend'; const l=k.toLowerCase(); for (const [en,nl] of Object.entries(ZONE_LABELS)) if (l.includes(en)) return nl; return k; }
+function zoneColor(k) { if (!k) return '#95a5a6'; const l=(k||'').toLowerCase(); for (const [en,c] of Object.entries(ZONE_COLORS)) if (l.includes(en)) return c; return '#95a5a6'; }
+
+function renderTables() {
+  if (!allData.length) return;
+  const groupBy = document.getElementById('groupBy')?.value || 'building';
+  const total = allData.reduce((s,b)=>s+b.gfa,0);
+  const fd = allData.filter(b=>b.floors);
+  const avgF = fd.length ? Math.round(fd.reduce((s,b)=>s+b.floors,0)/fd.length) : '—';
+  const mc = document.getElementById('metrics-content');
+
+  let html = `<div class="summary">
+    <div class="stat"><div class="stat-label">Totaal BVO</div><div class="stat-value">${total.toLocaleString('nl-NL')}<span class="stat-unit"> m²</span></div></div>
+    <div class="stat"><div class="stat-label">Gebouwen</div><div class="stat-value">${allData.length}</div></div>
+    <div class="stat"><div class="stat-label">Gem. bouwlagen</div><div class="stat-value">${avgF}</div></div>
+    <div class="stat"><div class="stat-label">Zones</div><div class="stat-value">${new Set(allData.map(b=>b.zone)).size}</div></div>
+  </div>`;
+
+  if (groupBy==='building'||groupBy==='both') {
+    html += '<div class="section-title">Per gebouw</div><table><thead><tr><th>Naam</th><th>Zone</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
+    for (const b of allData) {
+      const p = total>0 ? Math.round(b.gfa/total*100) : 0;
+      const c = zoneColor(b.zone);
+      html += `<tr><td style="font-weight:500">${b.name}</td><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(b.zone)}</span></td><td>${b.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
+
+  if (groupBy==='zone'||groupBy==='both') {
+    const bz={};
+    for (const b of allData) { const k=b.zone||'other'; if(!bz[k]) bz[k]={gfa:0,count:0}; bz[k].gfa+=b.gfa; bz[k].count++; }
+    html += '<div class="section-title">Per zone</div><table><thead><tr><th>Zone</th><th>Geb.</th><th>BVO (m²)</th><th>Aandeel</th></tr></thead><tbody>';
+    for (const [k,v] of Object.entries(bz)) {
+      const p = total>0 ? Math.round(v.gfa/total*100) : 0;
+      const c = zoneColor(k);
+      html += `<tr><td><span class="badge" style="background:${c}22;color:${c}">${zoneLabel(k)}</span></td><td>${v.count}</td><td>${v.gfa.toLocaleString('nl-NL')}</td><td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:${c}"></div></div><span style="color:#888">${p}%</span></div></td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
+
+  html += `<div class="export-row"><button id="btn-csv">CSV ↓</button><button id="btn-json">JSON kopiëren</button></div>`;
+  mc.innerHTML = html;
+
+  document.getElementById('btn-csv').addEventListener('click', () => {
+    const rows = [['Naam','Zone','BVO (m2)','Bouwlagen']];
+    for (const b of allData) rows.push([b.name, zoneLabel(b.zone), b.gfa, b.floors||'']);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\uFEFF'+rows.map(r=>r.join(';')).join('\n')],{type:'text/csv;charset=utf-8;'}));
+    a.download = 'forma-bvo.csv'; a.click();
+  });
+  document.getElementById('btn-json').addEventListener('click', () => {
+    navigator.clipboard.writeText(JSON.stringify(allData,null,2)).then(()=>alert('JSON gekopieerd.'));
+  });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+document.getElementById('btn-login')?.addEventListener('click', startLogin);
+
+const params = new URLSearchParams(window.location.search);
+const code = params.get('code');
+const token = sessionStorage.getItem('access_token');
+
+if (code) {
+  handleCallback(code).catch(e => {
+    document.getElementById('content').innerHTML =
+      `<div class="error">Login mislukt: ${e.message}</div>`;
+  });
+} else if (token) {
+  loadProjectAndMetrics(token);
+}
 </script>
 </body>
 </html>
